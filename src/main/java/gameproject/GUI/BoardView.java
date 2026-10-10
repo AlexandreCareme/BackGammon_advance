@@ -162,7 +162,6 @@ public class BoardView extends Pane {
         barLabel.setLayoutY(bar.getY() + bar.getHeight() / 2  - barLabel.getPrefWidth() / 2);
 
 
-
         /*
          * 24 board points
          */
