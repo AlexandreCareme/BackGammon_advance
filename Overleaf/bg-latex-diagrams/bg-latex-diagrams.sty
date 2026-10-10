@@ -1,0 +1,650 @@
+% bg-latex-diagrams.sty
+% Adapted from backgammon.sty, part of latex_backgammon
+% https://github.com/psygo/latex_backgammon
+% Copyright (c) 2024, Philippe Fanaro
+% Licensed under the BSD 4-Clause License — see LICENSE in this folder.
+
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric}
+
+% Whether the point numbers 1-24 are drawn around the board; see the
+% `coordinates` key on the `backgammon` environment.
+\newif\ifbackgammonShowCoordinates
+
+% Whether the left/right side columns (for the doubling die and the
+% checkers that have left the board, respectively) take up any space at
+% all; see the `left column`/`right column` keys on the `backgammon`
+% environment.
+\newif\ifbackgammonShowLeftColumn
+\newif\ifbackgammonShowRightColumn
+
+% The two alternating colors of the triangles ("files").
+\definecolor{backgammonLight}{HTML}{F0D9B5}
+\definecolor{backgammonDark}{HTML}{8B5A2B}
+
+% Which way a file's triangle points: "up", for the files on the bottom
+% half of the board, or "down", for the files on the top half. Each
+% choice sets both the shape's own rotation and which of its anchors
+% ends up on the flat base, so that the base (not the apex) is always
+% the point placed at the pic's `at (...)` coordinate.
+%
+% This is deliberately implemented via plain macros (\bgFileRotate,
+% \bgFileAnchor) rather than passing `shape border rotate`/`anchor`
+% straight through as pic options: those keys would need to be repeated
+% literally inside the triangle's own \node[...] below, and a key given
+% directly on a node always wins over the same key set by an enclosing
+% pic/scope, silently ignoring whatever the caller passed in.
+\tikzset{
+  backgammon file direction/.is choice,
+  backgammon file direction/up/.code   = {\def\bgFileRotate{90}\def\bgFileAnchor{south}},
+  backgammon file direction/down/.code = {\def\bgFileRotate{270}\def\bgFileAnchor{north}},
+  backgammon file direction/.default   = up,
+  backgammon file direction            = up,
+}
+
+% Generic `/tikz/pics` options (rather than ones scoped under any
+% particular pic) so they can be passed in the same key-list as a
+% pic's own argument, e.g. `\pic {backgammon doubling die = 64, scale =
+% 1.5, font size = 12pt}`. Only `backgammon doubling die`/`backgammon
+% checker` read `\bgPicScale`/`\bgPicFontSize`/`\bgPicNumber` today, so
+% this has no effect on other pics; they default back for any
+% invocation that doesn't set them explicitly, the same way
+% `backgammon file direction` does above.
+\tikzset{
+  /tikz/pics/scale/.store in = \bgPicScale,
+  /tikz/pics/scale/.default  = 1,
+  /tikz/pics/scale           = 1,
+  /tikz/pics/font size/.store in = \bgPicFontSize,
+  /tikz/pics/font size/.default  = 10pt,
+  /tikz/pics/font size           = 10pt,
+  % Used by `backgammon checker` to show an overflow count on the last
+  % visible checker of a stack taller than 5 (the usual backgammon
+  % diagram convention), e.g. `\pic at (point cs:12,5) {backgammon
+  % checker = dark, number = 2}` for a point with 6 dark checkers.
+  /tikz/pics/number/.store in = \bgPicNumber,
+  /tikz/pics/number/.default  = {},
+  /tikz/pics/number           = {},
+}
+
+% The board's layout constants, for the 5 regions from left to right:
+%   [left col][quadrant A: 6 files][bar][quadrant B: 6 files][right col]
+%
+% This is a plain macro (rather than a pic of its own) so that both
+% `backgammon board` and `backgammon coordinates` can compute the same
+% positions without one having to reach into the other's local scope.
+%
+% Throughout this file, a plain number denotes TikZ's default
+% coordinate unit, i.e. 1cm (so e.g. `\bgHeight = 4` means 4cm before
+% any further scaling). The left/right columns (when shown) are given
+% directly in physical cm by the user (`side column width`) and are
+% NOT stretched by `board width`: instead, `\bgPointWidth` -- and so
+% the whole point grid (12 points + the bar) -- is computed to exactly
+% fill whatever width `board width` leaves over, so the side columns
+% always come out exactly the size the user asked for, regardless of
+% how wide the board itself is. They collapse to width 0 when disabled
+% (see `left column`/`right column`), so the point grid simply expands
+% to fill the space they would have taken.
+\def\bgSetupBoardLayout{%
+  \def\bgPointsPerQuadrant{6}%
+  \def\bgBarWidthInPoints{1}%
+  \def\bgHeight{4}%
+  \ifbackgammonShowLeftColumn
+    \pgfmathsetmacro\bgLeftColWidth{\backgammonSideColWidth / 1cm}%
+  \else
+    \def\bgLeftColWidth{0}%
+  \fi
+  \ifbackgammonShowRightColumn
+    \pgfmathsetmacro\bgRightColWidth{\backgammonSideColWidth / 1cm}%
+  \else
+    \def\bgRightColWidth{0}%
+  \fi
+  \pgfmathsetmacro\bgTargetBoardWidth{\backgammonBoardWidth / 1cm}%
+  \pgfmathsetmacro\bgPointWidth{%
+    (\bgTargetBoardWidth - \bgLeftColWidth - \bgRightColWidth)
+    / (2*\bgPointsPerQuadrant + \bgBarWidthInPoints)%
+  }%
+  \pgfmathsetmacro\bgBarWidth{\bgBarWidthInPoints * \bgPointWidth}%
+  \pgfmathsetmacro\bgQuadrantWidth{\bgPointWidth * \bgPointsPerQuadrant}%
+  \pgfmathsetmacro\bgQuadrantAX{\bgLeftColWidth}%
+  \pgfmathsetmacro\bgBarX{\bgQuadrantAX + \bgQuadrantWidth}%
+  \pgfmathsetmacro\bgQuadrantBX{\bgBarX + \bgBarWidth}%
+  \pgfmathsetmacro\bgRightColX{\bgQuadrantBX + \bgQuadrantWidth}%
+  \pgfmathsetmacro\bgBoardWidth{\bgRightColX + \bgRightColWidth}%
+}
+
+% Translates a (point number, stack index) pair -- point numbers 1-24,
+% following the exact same convention as `backgammon coordinates`'s
+% point labels, plus -1 for the bar (the center column, for captured
+% checkers) -- into an actual `(x, y)` coordinate on the board, so
+% pieces can be placed like `\pic at (point cs:1,1) {backgammon
+% checker = light};` instead of by hand with
+% `\bgQuadrantAX`/`\bgPointWidth`/etc.
+%
+% For points 1-24, the stack index is 1-based, counting outward from
+% the board's edge (i.e. away from the center); the first checker
+% (stack index 1) is always tangent to the board's edge, regardless of
+% `checker spacing`, and the gap between checkers is `checker spacing`.
+%
+% For the bar (point -1), there is no "edge" to count outward from, so
+% the stack index's *sign* selects a direction from the board's
+% vertical center instead: positive counts upward, negative counts
+% downward -- e.g. `\pic at (point cs:-1,1) {backgammon checker =
+% light};` and `\pic at (point cs:-1,-1) {backgammon checker = dark};`
+% place the two colors' first captured checker equally far from the
+% center on opposite sides, so light and dark stacks always grow apart
+% from the board's true vertical center rather than colliding. Unlike
+% `checker spacing` (which only applies *between* checkers, since
+% stack index 1 is always tangent to the board's edge), `bar spacing`
+% is also the gap between the center line and the first checker on
+% either side -- there's no "edge" at the center to be tangent to, so
+% this is what actually controls how far apart from center the
+% checkers sit. It's independent of `checker spacing`, since the bar's
+% checkers usually want different spacing than the points'.
+%
+% Either way, a spacing of 0 means tangent (touching, matching
+% `checker size`'s own units), and a negative value makes them overlap.
+%
+% This is a proper TikZ coordinate system (`\tikzdeclarecoordinatesystem`)
+% rather than a macro expanding to `(x, y)` text: TikZ's `at <coord>`
+% parser decides whether what follows is a coordinate by peeking at the
+% very next token *without* expanding it, so a macro call (which isn't
+% literally a `(`) fails to parse. Writing the real `(` ourselves and
+% deferring only the `point cs:...` part to our own code sidesteps that
+% entirely, and lets us run arbitrary TeX (the `\ifnum` chain below)
+% while computing the point, which a plain expandable macro couldn't.
+%
+% `\bgComputePointX` (setting `\bgPointX` and, as a side effect,
+% leaving `\bgPointNum` set to the truncated point number) is factored
+% out so `die cs:` below can reuse the same point-to-x mapping without
+% duplicating it.
+\def\bgComputePointX#1{%
+  \pgfmathtruncatemacro\bgPointNum{#1}%
+  \ifnum\bgPointNum=-1
+    \pgfmathsetmacro\bgPointX{\bgBarX + \bgBarWidth/2}%
+  \else\ifnum\bgPointNum<7
+    \pgfmathsetmacro\bgPointX{\bgQuadrantBX + (6.5  - \bgPointNum) * \bgPointWidth}%
+  \else\ifnum\bgPointNum<13
+    \pgfmathsetmacro\bgPointX{\bgQuadrantAX + (12.5 - \bgPointNum) * \bgPointWidth}%
+  \else\ifnum\bgPointNum<19
+    \pgfmathsetmacro\bgPointX{\bgQuadrantAX + (\bgPointNum - 12.5) * \bgPointWidth}%
+  \else
+    \pgfmathsetmacro\bgPointX{\bgQuadrantBX + (\bgPointNum - 18.5) * \bgPointWidth}%
+  \fi\fi\fi\fi
+}
+\def\bgPointCoordinateSystem#1,#2\bgPointCoordinateSystemEnd{%
+  \bgSetupBoardLayout
+  \bgComputePointX{#1}%
+  \pgfmathsetmacro\bgCheckerDiameterUnits{(\backgammonCheckerSize / 1cm) / \bgYScale}%
+  \pgfmathtruncatemacro\bgStackIndex{#2}%
+  \ifnum\bgPointNum=-1
+    \pgfmathsetmacro\bgBarGapUnits{(\backgammonBarSpacing / 1cm) / \bgYScale}%
+    \ifnum\bgStackIndex<0
+      \pgfmathsetmacro\bgStackY{%
+        0.5*\bgCheckerDiameterUnits + \bgBarGapUnits
+        + (-\bgStackIndex - 1) * (\bgCheckerDiameterUnits + \bgBarGapUnits)%
+      }%
+      \pgfmathsetmacro\bgPointY{\bgHeight/2 - \bgStackY}%
+    \else
+      \pgfmathsetmacro\bgStackY{%
+        0.5*\bgCheckerDiameterUnits + \bgBarGapUnits
+        + (\bgStackIndex - 1) * (\bgCheckerDiameterUnits + \bgBarGapUnits)%
+      }%
+      \pgfmathsetmacro\bgPointY{\bgHeight/2 + \bgStackY}%
+    \fi
+  \else
+    \pgfmathsetmacro\bgCheckerGapUnits{(\backgammonCheckerSpacing / 1cm) / \bgYScale}%
+    % A node's stroke straddles its nominal boundary (half inside, half
+    % outside), so a checker centered exactly `0.5*diameter` from the
+    % board edge -- i.e. only tangent by its *nominal* radius -- has
+    % its actual drawn border overlap the board edge by half the
+    % border's width. Shifting the whole stack in by that much (the
+    % wider of the two colors', since this coordinate system is picked
+    % before `backgammon checker` knows which color it'll draw) makes
+    % the outermost checker's own drawn border, not just its nominal
+    % circle, the thing that's tangent to the board edge.
+    \pgfmathsetmacro\bgCheckerBorderMarginUnits{%
+      max(\backgammonCheckerBorderWidthLight / 1cm, \backgammonCheckerBorderWidthDark / 1cm)
+      / 2 / \bgYScale%
+    }%
+    \pgfmathsetmacro\bgStackY{%
+      \bgCheckerBorderMarginUnits + 0.5*\bgCheckerDiameterUnits
+      + (\bgStackIndex - 1) * (\bgCheckerDiameterUnits + \bgCheckerGapUnits)%
+    }%
+    \ifnum\bgPointNum<13
+      \pgfmathsetmacro\bgPointY{\bgStackY}%
+    \else
+      \pgfmathsetmacro\bgPointY{\bgHeight - \bgStackY}%
+    \fi
+  \fi
+  \pgfpointxy{\bgPointX}{\bgPointY}%
+}
+\tikzdeclarecoordinatesystem{point}{\bgPointCoordinateSystem#1\bgPointCoordinateSystemEnd}
+
+% Like `point cs:`, but for the two regular dice: they share the same
+% per-point x position as the checkers (so a die can be shown "on" a
+% point's column), but are always vertically centered on the board
+% (like the doubling die), regardless of any checkers stacked there --
+% so this only takes the point number, not a stack index, e.g.
+% `\pic at (die cs:12) {backgammon die = 4};`.
+\def\bgDieCoordinateSystem#1\bgDieCoordinateSystemEnd{%
+  \bgSetupBoardLayout
+  \bgComputePointX{#1}%
+  \pgfpointxy{\bgPointX}{\bgHeight/2}%
+}
+\tikzdeclarecoordinatesystem{die}{\bgDieCoordinateSystem#1\bgDieCoordinateSystemEnd}
+
+\pgfkeys{
+  % These are the background triangles used for each file.
+  %
+  % The shape's own local origin is anchored to its base (the flat edge),
+  % with the apex pointing towards +x by default. See `backgammon file
+  % direction` above for how the up/down orientation is controlled.
+  %
+  % The fill color is deliberately left unset here so that it can be
+  % passed in when the pic is placed, e.g. `\pic[fill = backgammonDark]`.
+  %
+  % The width is derived from `file gap` (an absolute physical gap
+  % left between two neighboring files, subtracted from the point
+  % width computed in `\bgSetupBoardLayout`) rather than being a size
+  % of its own, so that the triangles always stay centered on, and
+  % touching, their point on the grid.
+  /tikz/pics/backgammon file bg triangle/.style={
+    code={
+      \bgSetupBoardLayout
+      \pgfmathsetmacro\bgFileGapUnits{\backgammonFileGap / 1cm}
+      \pgfmathsetmacro\bgFileWidth{\bgPointWidth - \bgFileGapUnits}
+      \node[%
+        isosceles triangle,
+        isosceles triangle stretches,
+        isosceles triangle apex angle = 30,
+        shape border rotate            = \bgFileRotate,
+        minimum height                 = \backgammonFileHeight,
+        minimum width                  = \bgFileWidth cm,
+        inner sep                      = 0pt,
+        anchor                         = \bgFileAnchor,
+        fill, % the color itself is set when the pic is placed
+        transform shape = false, % stay a true triangle; see `backgammon`
+      ]
+        (triangle) at (0, 0){};
+      }
+  },
+  % The point numbers 1-24, following the usual convention: 1-6 along the
+  % bottom right (nearest the right column), continuing counterclockwise
+  % through 7-12 (bottom left), 13-18 (top left) and 19-24 (top right).
+  /tikz/pics/backgammon coordinates/.style={
+    code={
+      \bgSetupBoardLayout
+      % `coordinates gap` is an absolute physical distance, but this
+      % pic's y-coordinates are on the same pre-`yscale` grid as
+      % `\bgHeight` (see `backgammon`'s environment code), so it has to
+      % be converted back into that grid's units by dividing out
+      % `\bgYScale` here -- otherwise the gap itself would grow or
+      % shrink along with `board height` instead of staying fixed.
+      \pgfmathsetmacro\bgCoordGap{(\backgammonCoordinatesGap / 1cm) / \bgYScale}
+      \foreach \i in {0, ..., 5} {
+        \pgfmathsetmacro\bgLabelAX{\bgQuadrantAX + (\i + 0.5)*\bgPointWidth}
+        \pgfmathsetmacro\bgLabelBX{\bgQuadrantBX + (\i + 0.5)*\bgPointWidth}
+
+        \pgfmathtruncatemacro\bgLabelBottomA{2*\bgPointsPerQuadrant - \i}
+        \pgfmathtruncatemacro\bgLabelBottomB{\bgPointsPerQuadrant - \i}
+        \pgfmathtruncatemacro\bgLabelTopA{2*\bgPointsPerQuadrant + 1 + \i}
+        \pgfmathtruncatemacro\bgLabelTopB{3*\bgPointsPerQuadrant + 1 + \i}
+
+        \node[font=\fontsize{\backgammonCoordinatesFontSize}{\backgammonCoordinatesFontSize}\selectfont\bfseries, transform shape = false] at (\bgLabelAX, -\bgCoordGap)             {\bgLabelBottomA};
+        \node[font=\fontsize{\backgammonCoordinatesFontSize}{\backgammonCoordinatesFontSize}\selectfont\bfseries, transform shape = false] at (\bgLabelBX, -\bgCoordGap)             {\bgLabelBottomB};
+        \node[font=\fontsize{\backgammonCoordinatesFontSize}{\backgammonCoordinatesFontSize}\selectfont\bfseries, transform shape = false] at (\bgLabelAX, \bgHeight + \bgCoordGap)  {\bgLabelTopA};
+        \node[font=\fontsize{\backgammonCoordinatesFontSize}{\backgammonCoordinatesFontSize}\selectfont\bfseries, transform shape = false] at (\bgLabelBX, \bgHeight + \bgCoordGap)  {\bgLabelTopB};
+      }
+    }
+  },
+  % The backgammon board consists of, from left to right:
+  %
+  %   1. A column on the left, with the doubling die in the middle.
+  %   2. A rectangle with files for the pieces.
+  %   3. A column in the center, for the captured checkers.
+  %   4. Another rectangle with files for the pieces.
+  %   5. A column on the right, for the pieces which leave the board.
+  /tikz/pics/backgammon board/.style={
+    code={
+      \bgSetupBoardLayout
+
+      % 1. The outer outline (filled with `board background color`),
+      %    plus the "bars" -- the left/right columns and the center
+      %    bar, filled with `bar background color` -- and the dividers
+      %    between all the regions. The left/right dividers/fills are
+      %    only drawn when that column is actually shown, since
+      %    otherwise they'd just double up on the outer outline (their
+      %    width having collapsed to 0).
+      \draw[fill = \backgammonBoardBackgroundColor] (0, 0) rectangle (\bgBoardWidth, \bgHeight);
+      \ifbackgammonShowLeftColumn
+        \fill[\backgammonBarBackgroundColor] (0, 0) rectangle (\bgQuadrantAX, \bgHeight);
+      \fi
+      \fill[\backgammonBarBackgroundColor] (\bgBarX, 0) rectangle (\bgQuadrantBX, \bgHeight);
+      \ifbackgammonShowRightColumn
+        \fill[\backgammonBarBackgroundColor] (\bgRightColX, 0) rectangle (\bgBoardWidth, \bgHeight);
+      \fi
+      \ifbackgammonShowLeftColumn
+        \draw (\bgQuadrantAX, 0) -- (\bgQuadrantAX, \bgHeight);
+      \fi
+      \draw (\bgBarX,       0) -- (\bgBarX,       \bgHeight);
+      \draw (\bgQuadrantBX, 0) -- (\bgQuadrantBX, \bgHeight);
+      \ifbackgammonShowRightColumn
+        \draw (\bgRightColX, 0) -- (\bgRightColX, \bgHeight);
+      \fi
+
+      % 2. The 2 x 6 files in each of the 2 rectangles (24 in total),
+      %    alternating colors continuously across both quadrants.
+      \foreach \n in {0, ..., 11} {
+        \ifnum\n<6
+          \pgfmathsetmacro\bgFileX{\bgQuadrantAX + (\n + 0.5)*\bgPointWidth}
+        \else
+          \pgfmathsetmacro\bgFileX{\bgQuadrantBX + (\n - 6 + 0.5)*\bgPointWidth}
+        \fi
+        \ifodd\n
+          \pic[fill = \backgammonFileColorDark]  at (\bgFileX, 0)        {backgammon file bg triangle};
+          \pic[fill = \backgammonFileColorLight, backgammon file direction = down] at (\bgFileX, \bgHeight) {backgammon file bg triangle};
+        \else
+          \pic[fill = \backgammonFileColorLight] at (\bgFileX, 0)        {backgammon file bg triangle};
+          \pic[fill = \backgammonFileColorDark,  backgammon file direction = down] at (\bgFileX, \bgHeight) {backgammon file bg triangle};
+        \fi
+      }
+
+      % 3. The bar, in the center, for the captured checkers:
+      % TODO
+
+      % 4. The column on the left, for the doubling die: this is left
+      %    empty here. The die's value and position are up to the user,
+      %    placed like any other piece via a `\pic` inside `backgammon`,
+      %    e.g. `\pic at (\bgLeftColWidth/2, \bgHeight/2)
+      %    {backgammon doubling die = 64};`.
+
+      % 5. The column on the right, for the checkers that have left the board:
+      % TODO
+
+      % 6. Use the backgammon coordinates (optional, see the
+      %    `coordinates` key on the `backgammon` environment)
+      \ifbackgammonShowCoordinates
+        \pic {backgammon coordinates};
+      \fi
+    }
+  },
+  % A single checker, its side ("light" or "dark", matching the same
+  % naming as `light file color`/`dark file color`) passed as the
+  % pic's argument, e.g. `\pic at (x, y) {backgammon checker = light}`.
+  % Like `backgammon doubling die`, it's placed by the user (not the
+  % board); its color comes from `light checker color`/`dark checker
+  % color`, its outline from `light checker border color`/`width` and
+  % `dark checker border color`/`width`, and its diameter is `checker
+  % size` multiplied by the shared `scale` pic option
+  % (e.g. `\pic at (x, y) {backgammon checker = light, scale = 0.9}`).
+  %
+  % A stack taller than 5 checkers is conventionally drawn as only 5
+  % checkers, with the count of the ones not drawn shown on the last
+  % one -- e.g. 6 dark checkers on a point become 4 plain ones plus a
+  % 5th showing "2": `\pic at (point cs:12,5) {backgammon checker =
+  % dark, number = 2}`. That's the `number` pic option (shared, so it
+  % also works via `\bgPicNumber` here), rendered in the opposite
+  % checker color for contrast, sized from `font size` (like the
+  % doubling die) times `scale`.
+  /tikz/pics/backgammon checker/.is choice,
+  /tikz/pics/backgammon checker/light/.style = {
+    code = {
+      \pgfmathsetmacro\bgCheckerDiameter{(\backgammonCheckerSize / 1cm) * \bgPicScale}
+      \pgfmathsetlengthmacro\bgCheckerNumberFontSize{\bgPicFontSize * \bgPicScale}
+      \node[
+        draw            = \backgammonCheckerBorderColorLight,
+        line width     = \backgammonCheckerBorderWidthLight,
+        circle,
+        fill           = \backgammonCheckerColorLight,
+        text           = \backgammonCheckerColorDark,
+        font           = \fontsize{\bgCheckerNumberFontSize}{\bgCheckerNumberFontSize}\selectfont\bfseries,
+        minimum width  = \bgCheckerDiameter cm,
+        minimum height = \bgCheckerDiameter cm,
+        inner sep      = 0pt,
+        transform shape = false, % stay a true circle; see `backgammon`
+      ] at (0, 0) {\bgPicNumber};
+    }
+  },
+  /tikz/pics/backgammon checker/dark/.style = {
+    code = {
+      \pgfmathsetmacro\bgCheckerDiameter{(\backgammonCheckerSize / 1cm) * \bgPicScale}
+      \pgfmathsetlengthmacro\bgCheckerNumberFontSize{\bgPicFontSize * \bgPicScale}
+      \node[
+        draw            = \backgammonCheckerBorderColorDark,
+        line width     = \backgammonCheckerBorderWidthDark,
+        circle,
+        fill           = \backgammonCheckerColorDark,
+        text           = \backgammonCheckerColorLight,
+        font           = \fontsize{\bgCheckerNumberFontSize}{\bgCheckerNumberFontSize}\selectfont\bfseries,
+        minimum width  = \bgCheckerDiameter cm,
+        minimum height = \bgCheckerDiameter cm,
+        inner sep      = 0pt,
+        transform shape = false, % stay a true circle; see `backgammon`
+      ] at (0, 0) {\bgPicNumber};
+    }
+  },
+  % A single regular die, showing its face value (1-6, passed as the
+  % pic's argument) as pips, e.g. `\pic at (die cs:12) {backgammon die
+  % = 4}`. Placed like `backgammon checker`/`backgammon doubling die`
+  % (by the user, not the board); its size is `die size` multiplied by
+  % the shared `scale` pic option, and its outline is `die border
+  % width`. `die cs:` (see above) shares the checkers' per-point x
+  % position but always sits at the board's vertical center.
+  /tikz/pics/backgammon die/.style args={#1}{
+    code={
+      \pgfmathtruncatemacro\bgDieValue{#1}
+      \pgfmathsetmacro\bgDieSize{(\backgammonDieSize / 1cm) * \bgPicScale}
+      \pgfmathsetmacro\bgDieCorner{0.15 * \bgDieSize}
+      \pgfmathsetmacro\bgDiePipSize{0.18 * \bgDieSize}
+      \node[
+        draw,
+        line width      = \backgammonDieBorderWidth,
+        fill            = white,
+        rounded corners = \bgDieCorner cm,
+        minimum width   = \bgDieSize cm,
+        minimum height  = \bgDieSize cm,
+        inner sep       = 0pt,
+        transform shape = false, % stay a true square; see `backgammon`
+      ] at (0, 0) {};
+      \ifcase\bgDieValue\relax
+      \or \def\bgDiePips{0/0}%
+      \or \def\bgDiePips{-0.22/0.22,0.22/-0.22}%
+      \or \def\bgDiePips{-0.22/0.22,0/0,0.22/-0.22}%
+      \or \def\bgDiePips{-0.22/0.22,0.22/0.22,-0.22/-0.22,0.22/-0.22}%
+      \or \def\bgDiePips{-0.22/0.22,0.22/0.22,0/0,-0.22/-0.22,0.22/-0.22}%
+      \or \def\bgDiePips{-0.22/0.22,0.22/0.22,-0.22/0,0.22/0,-0.22/-0.22,0.22/-0.22}%
+      \fi
+      \foreach \bgPipX/\bgPipY in \bgDiePips {
+        % The y-offset (but not x, since `backgammon`'s ambient scale
+        % is only ever non-uniform in y) is divided by `\bgYScale`
+        % here: a plain \node's *position* always respects the ambient
+        % scale, even with `transform shape = false` on it (that only
+        % cancels the node's own shape distortion) -- so without this,
+        % the ambient `yscale` would multiply the offset a second time
+        % and push the pips outside the die at any `board height` other
+        % than the one that makes `\bgYScale = 1`.
+        \node[
+          circle,
+          fill            = black,
+          minimum width   = \bgDiePipSize cm,
+          inner sep       = 0pt,
+          transform shape = false,
+        ] at (\bgPipX * \bgDieSize, \bgPipY * \bgDieSize / \bgYScale) {};
+      }
+    }
+  },
+  % The doubling die (cube), showing the current stake value (2, 4, 8,
+  % 16, 32 or 64) passed as the pic's argument, e.g.
+  % `\pic {backgammon doubling die = 64}`. Its overall size is the base
+  % 0.9cm die multiplied by `scale`, and its digits are set in `font
+  % size` (base 10pt), also multiplied by `scale` so a scaled-up die
+  % keeps looking proportioned even without adjusting `font size` too.
+  % Both are pic options of their own -- passed alongside the value in
+  % the same braces, e.g. `\pic {backgammon doubling die = 64, scale =
+  % 1.5, font size = 12pt}`. They're deliberately custom `/tikz/pics`
+  % options (see their `\tikzset` above) rather than relying on
+  % genuine TikZ canvas scaling: the die's node sets `transform shape =
+  % false` (to stay undistorted under `backgammon`'s own `yscale`),
+  % which would just as well cancel out a real canvas scale wrapped
+  % around this pic. Its outline width is `doubling die border width`.
+  /tikz/pics/backgammon doubling die/.style args={#1}{
+    code={
+      \pgfmathsetmacro\bgDoublingDieSize{0.9 * \bgPicScale}
+      \pgfmathsetlengthmacro\bgDoublingDieFontSize{\bgPicFontSize * \bgPicScale}
+      \node[
+        draw,
+        line width      = \backgammonDoublingDieBorderWidth,
+        fill            = white,
+        text            = black,
+        font            = \fontsize{\bgDoublingDieFontSize}{\bgDoublingDieFontSize}\selectfont\bfseries,
+        rounded corners = 1mm,
+        minimum width   = \bgDoublingDieSize cm,
+        minimum height  = \bgDoublingDieSize cm,
+        inner sep       = 0pt,
+        transform shape = false, % stay a true square; see `backgammon`
+      ] at (0, 0) {#1};
+    }
+  },
+  /phili/backgammon/.cd,
+    % The board's physical size. These are independent (rather than a
+    % single `board dimension` that scales both together), so the board
+    % can be stretched to a non-natural aspect ratio if desired.
+    board width/.store in  = \backgammonBoardWidth,
+    board width            = 18cm,
+    board height/.store in = \backgammonBoardHeight,
+    board height           = 4cm,
+    % The board's overall background (behind the points) and the
+    % "bars" -- the left/right columns and the center bar -- own
+    % background, so they can be set apart from the rest of the board.
+    board background color/.store in = \backgammonBoardBackgroundColor,
+    board background color           = white,
+    bar background color/.store in   = \backgammonBarBackgroundColor,
+    bar background color             = white,
+    coordinates/.is if        = backgammonShowCoordinates,
+    coordinates/.default      = true,
+    coordinates               = true,
+    % The distance between the board's outer edge and the point-number
+    % labels, and their font size. Both are absolute physical sizes,
+    % just like `board width`/`board height`, unaffected by the
+    % board's own scaling.
+    coordinates gap/.store in       = \backgammonCoordinatesGap,
+    coordinates gap                 = 0.3cm,
+    coordinates font size/.store in = \backgammonCoordinatesFontSize,
+    coordinates font size           = 9pt,
+    % The two alternating colors of the file triangles.
+    light file color/.store in = \backgammonFileColorLight,
+    light file color           = backgammonLight,
+    dark file color/.store in  = \backgammonFileColorDark,
+    dark file color            = backgammonDark,
+    % The two checker colors (see `backgammon checker`'s `light`/`dark`
+    % argument), their border colors and widths, and their diameter
+    % (an absolute physical size, like `board width`, multiplied by
+    % that pic's own `scale` option).
+    light checker color/.store in = \backgammonCheckerColorLight,
+    light checker color           = white,
+    dark checker color/.store in  = \backgammonCheckerColorDark,
+    dark checker color            = black,
+    light checker border color/.store in = \backgammonCheckerBorderColorLight,
+    light checker border color           = black,
+    dark checker border color/.store in  = \backgammonCheckerBorderColorDark,
+    dark checker border color            = black,
+    light checker border width/.store in = \backgammonCheckerBorderWidthLight,
+    light checker border width           = 1pt,
+    dark checker border width/.store in  = \backgammonCheckerBorderWidthDark,
+    dark checker border width            = 1pt,
+    checker size/.store in = \backgammonCheckerSize,
+    checker size           = 0.9cm,
+    % The gap left between checkers stacked on the same point (see
+    % `point cs:` above): 0 means tangent (touching), and a negative
+    % value makes them overlap. Independent of `checker size`.
+    checker spacing/.store in = \backgammonCheckerSpacing,
+    checker spacing           = 0cm,
+    % For checkers stacked on the bar (see `point cs:-1,...` above):
+    % both the gap between the vertical center and the first checker
+    % on either side, and the gap between checkers beyond that one.
+    % Kept separate from `checker spacing` since the bar usually wants
+    % different spacing than the points do.
+    bar spacing/.store in = \backgammonBarSpacing,
+    bar spacing           = 0cm,
+    % The doubling die's outline width (its size and font are pic
+    % options -- `scale`/`font size` -- rather than environment-wide,
+    % since there's only ever one doubling die on the board).
+    doubling die border width/.store in = \backgammonDoublingDieBorderWidth,
+    doubling die border width           = 1pt,
+    % The regular dice's diameter (an absolute physical size, like
+    % `board width`, multiplied by that pic's own `scale` option) and
+    % outline width.
+    die size/.store in = \backgammonDieSize,
+    die size           = 0.8cm,
+    die border width/.store in = \backgammonDieBorderWidth,
+    die border width           = 1pt,
+    % How tall the file triangles are, and how much physical space is
+    % left as a gap between neighboring files (see `backgammon file bg
+    % triangle` above). Both are absolute physical sizes, rather than
+    % being relative to the point spacing.
+    file height/.store in = \backgammonFileHeight,
+    file height           = 1.7cm,
+    file gap/.store in    = \backgammonFileGap,
+    file gap              = 0.1cm,
+    % Whether the left/right side columns take up any space at all.
+    left column/.is if    = backgammonShowLeftColumn,
+    left column/.default  = true,
+    left column           = true,
+    right column/.is if   = backgammonShowRightColumn,
+    right column/.default = true,
+    right column          = true,
+    % The width of the left/right side columns, when shown. This is an
+    % absolute physical size: see `\bgSetupBoardLayout` for how the
+    % point grid is sized to fill whatever `board width` leaves over
+    % after these, rather than the side columns being stretched along
+    % with everything else.
+    side column width/.store in = \backgammonSideColWidth,
+    side column width           = 1.5cm,
+}
+
+\newenvironment{backgammon}[1][]{%
+  \begin{tikzpicture}
+    % `#1` is deliberately applied via `\pgfqkeys` (which takes the
+    % path as a separate argument) rather than `\tikzset{/phili/
+    % backgammon/.cd, #1}`: `\newenvironment`'s optional argument keeps
+    % any leading whitespace it was given (e.g. from a line break right
+    % after the opening `[`), and pgfkeys fails to match a key whose
+    % name has that whitespace glued to the front of it -- but only
+    % when the `.cd` and the (whitespace-prefixed) key list are given
+    % to the same `\pgfkeys`/`\tikzset` call, as they would be here.
+    \pgfqkeys{/phili/backgammon}{#1}
+    % The horizontal axis needs no extra scaling here: `\bgSetupBoardLayout`
+    % already sizes the point grid to exactly fill `board width` (minus
+    % the side columns, which are their own absolute physical size --
+    % see the comment there). The vertical axis is a single region
+    % (there's no analogous "some things are absolute" split for
+    % height), so it keeps the simpler approach of drawing on a
+    % fixed-height grid and stretching it to `board height` via `yscale`.
+    %
+    % `transform shape` IS needed here, even though only `yscale` is
+    % non-1 and we don't want that stretch to distort node shapes: a
+    % `\pic` (unlike a plain `\node`) only positions itself according to
+    % the ambient scale/rotate if `transform shape` is in effect for it
+    % -- without it, every `\pic` in here (the board itself, each file,
+    % the coordinate labels, any piece the user places) would render at
+    % its natural, un-stretched y position, ignoring `board height`
+    % entirely instead of just being placed wrong.
+    %
+    % So `transform shape` is enabled here for correct positioning, and
+    % every leaf shape that shouldn't be distorted by it (the file
+    % triangles, the doubling die, the coordinate labels) explicitly
+    % sets `transform shape = false` on its own node to opt back out --
+    % which only cancels the shape's own rendering, not its position.
+    %
+    % This scope is left open here and only closed in the environment's
+    % end code, so that any pieces (checkers, dice, ...) the user places
+    % with their own `\pic` commands inside `backgammon` share the same
+    % grid coordinates and the same scaling as the board itself.
+    \bgSetupBoardLayout
+    \pgfmathsetmacro\bgYScale{\backgammonBoardHeight / (\bgHeight cm)}
+    \begin{scope}[yscale = \bgYScale, transform shape]
+      \pic{backgammon board};
+}{
+    \end{scope}
+  \end{tikzpicture}%
+}

@@ -1,0 +1,26 @@
+# Maven build output
+target/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# R history
+.Rhistory
+
+# Logs
+*.log
+
+# Secrets and local environment
+.env
+.env.*
+
+# Release installers and generated packages
+release/Mac/*.dmg
+release/Windows/*.msi
+
+# macOS metadata, including nested folders
+.DS_Store
